@@ -37,9 +37,9 @@ Run a problem's server manually: `node problems/01-raw-http-server/server.ts`, t
 | 06  | Inventory Reservations   | Hard         | transactions, race conditions, `SELECT ... FOR UPDATE`, isolation levels  |
 | 07  | Idempotency Keys         | Hard         | safe retries for POST, storing responses, concurrent duplicate requests   |
 | 08  | Session Auth             | Hard         | password hashing, cookies, session store, CSRF basics                     |
+| 11  | URL Shortener (capstone) | Hard         | combines everything: schema, cache, rate limits, analytics counts         |
 | 13  | Job Queue on Postgres    | Hard         | port problem 09 to a table: `FOR UPDATE SKIP LOCKED`, worker processes    |
 | 14  | Cache on Redis           | Hard         | port problem 10 to Redis: TTLs, pub/sub invalidation, fleet-wide stampede |
-| 11  | URL Shortener (capstone) | Hard         | combines everything: schema, cache, rate limits, analytics counts         |
 
 ## System Design (whiteboard)
 
@@ -51,3 +51,9 @@ Interview-style design prompts in `design/`. Each has clarifying questions to as
 |        | Caching for a verified-profile lookup service                           | `design/02-caching-verified-profiles.md`          | 10             |
 |        | Scaling the verification API to 50,000 req/s                            | `design/03-scaling-verification-api.md`           | 12 (+ 04, 10)  |
 |        | Async document verification pipeline (queues)                           | `design/04-async-verification-pipeline-queues.md` | 09             |
+|        | Shop offers page at peak traffic (3 rising parts)                       | `design/05-shop-offers-peak-traffic.md`           | —              |
+|        | Cashback tracking and rewards ledger (3 rising parts)                   | `design/06-cashback-rewards-ledger.md`            | 09 (+ 06, 07)  |
+
+## AI Literacy (legacy code + your AI tool)
+
+`ai-literacy/` has four short legacy files in different languages (JavaScript, Python, Ruby, TypeScript), each with several planted problems and no tests. Work through them **with** your AI tool: explain intent → find and reproduce bugs → fix → generate edge-case tests. The README there covers the workflow, how to re-steer the model, and how to prepare your two AI stories. `_ANSWER_KEY.md` is for checking yourself afterwards.
