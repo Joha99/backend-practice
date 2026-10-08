@@ -69,3 +69,87 @@ export function createFixedWindowLimiter(limit: number, windowMs: number) {
 
   return { allowRequest, size };
 }
+
+// ---------------------------------------------------------------------------
+// Step 4: token bucket. Each key has a bucket holding up to `capacity`
+// tokens. A request takes 1 token; with no token it's rejected. Tokens come
+// back at `refillPerSecond` (fractions are fine, e.g. 0.5 tokens).
+// A key that has never been seen starts with a FULL bucket.
+// ---------------------------------------------------------------------------
+
+interface TokenBucketValue {
+  /**
+   * Time of last update for some API key.
+   */
+  updatedAt: number;
+  /**
+   * Tokens left in the bucket for some API key.
+   */
+  tokens: number;
+}
+
+export function createTokenBucketLimiter(
+  capacity: number,
+  refillPerSecond: number,
+) {
+  // maps key to # of tokens in bucket
+  const tokenBucket = new Map<string, TokenBucketValue>();
+
+  // request for key is only valid if the tokens associated with the key has more than 0 tokens
+  function allowRequest(key: string, now: number): boolean {
+    // no request is allowed if capacity is 0
+    if (capacity === 0) return false;
+
+    const currBucket = tokenBucket.get(key);
+    console.log("currBucket", currBucket);
+
+    // first request made for key
+    if (!currBucket) {
+      const newBucket: TokenBucketValue = {
+        updatedAt: now,
+        tokens: capacity - 1,
+      };
+      tokenBucket.set(key, newBucket);
+      return true;
+    }
+
+    const secondsPassed = (now - currBucket.updatedAt) / 1000;
+    const tokensStored = currBucket.tokens;
+    const refilledCount = secondsPassed * refillPerSecond;
+    const currentTokenCount = Math.min(capacity, tokensStored + refilledCount);
+
+    // only make request if there are still tokens available in the bucket
+    if (currentTokenCount >= 1) {
+      const updatedBucket: TokenBucketValue = {
+        updatedAt: now,
+        tokens: currentTokenCount - 1,
+      };
+      tokenBucket.set(key, updatedBucket);
+      return true;
+    }
+
+    return false;
+  }
+
+  // -------------------------------------------------------------------------
+  // Step 5: same decision as allowRequest, but also return the numbers the
+  // HTTP layer needs for its headers:
+  //   limit              -> X-RateLimit-Limit      (the bucket's capacity)
+  //   remaining          -> X-RateLimit-Remaining  (whole tokens left AFTER
+  //                                                 this request)
+  //   retryAfterSeconds  -> Retry-After            (0 when allowed; when
+  //                         rejected, whole seconds until 1 token is
+  //                         available, rounded UP)
+  // -------------------------------------------------------------------------
+  function check(
+    key: string,
+    now: number,
+  ): { allowed: boolean; limit: number; remaining: number; retryAfterSeconds: number } {
+    // TODO
+    void key;
+    void now;
+    throw new Error("not implemented");
+  }
+
+  return { allowRequest, check };
+}
