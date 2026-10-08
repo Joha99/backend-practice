@@ -97,59 +97,120 @@ export function createTokenBucketLimiter(
 
   // request for key is only valid if the tokens associated with the key has more than 0 tokens
   function allowRequest(key: string, now: number): boolean {
+    return check(key, now).allowed;
+  }
+
+  function check(
+    key: string,
+    now: number,
+  ): {
+    allowed: boolean;
+    limit: number;
+    remaining: number;
+    retryAfterSeconds: number;
+  } {
     // no request is allowed if capacity is 0
-    if (capacity === 0) return false;
+    if (capacity === 0) {
+      return {
+        allowed: false,
+        limit: capacity,
+        remaining: 0,
+        retryAfterSeconds: 0,
+      };
+    }
 
     const currBucket = tokenBucket.get(key);
-    console.log("currBucket", currBucket);
 
-    // first request made for key
+    // first request made for key, we are at full capacity
     if (!currBucket) {
       const newBucket: TokenBucketValue = {
         updatedAt: now,
         tokens: capacity - 1,
       };
       tokenBucket.set(key, newBucket);
-      return true;
+
+      return {
+        allowed: true,
+        limit: capacity,
+        remaining: capacity - 1,
+        retryAfterSeconds: 0, // this request succeeded so we don't need to retry again
+      };
     }
 
-    const secondsPassed = (now - currBucket.updatedAt) / 1000;
-    const tokensStored = currBucket.tokens;
-    const refilledCount = secondsPassed * refillPerSecond;
-    const currentTokenCount = Math.min(capacity, tokensStored + refilledCount);
+    // this is not the first request made for key
+    const secondsPassedSinceLastUpdate = (now - currBucket.updatedAt) / 1000;
+    const tokensStoredAfterLastUpdate = currBucket.tokens;
+    const refilledSinceLastUpdate =
+      secondsPassedSinceLastUpdate * refillPerSecond;
+    const currentTokenCount = Math.min(
+      capacity,
+      tokensStoredAfterLastUpdate + refilledSinceLastUpdate,
+    );
 
-    // only make request if there are still tokens available in the bucket
+    // only make request if there is at least one full token available
     if (currentTokenCount >= 1) {
       const updatedBucket: TokenBucketValue = {
         updatedAt: now,
         tokens: currentTokenCount - 1,
       };
       tokenBucket.set(key, updatedBucket);
-      return true;
+
+      return {
+        allowed: true,
+        limit: capacity,
+        remaining: Math.floor(currentTokenCount - 1),
+        retryAfterSeconds: 0, // this request succeeded so we don't need to retry again
+      };
     }
 
-    return false;
-  }
+    // there are no complete tokens available
+    const retryAfterSeconds = (1 - currentTokenCount) / refillPerSecond;
 
-  // -------------------------------------------------------------------------
-  // Step 5: same decision as allowRequest, but also return the numbers the
-  // HTTP layer needs for its headers:
-  //   limit              -> X-RateLimit-Limit      (the bucket's capacity)
-  //   remaining          -> X-RateLimit-Remaining  (whole tokens left AFTER
-  //                                                 this request)
-  //   retryAfterSeconds  -> Retry-After            (0 when allowed; when
-  //                         rejected, whole seconds until 1 token is
-  //                         available, rounded UP)
-  // -------------------------------------------------------------------------
-  function check(
-    key: string,
-    now: number,
-  ): { allowed: boolean; limit: number; remaining: number; retryAfterSeconds: number } {
-    // TODO
-    void key;
-    void now;
-    throw new Error("not implemented");
+    return {
+      allowed: false,
+      limit: capacity,
+      remaining: Math.floor(currentTokenCount),
+      retryAfterSeconds: Math.ceil(retryAfterSeconds),
+    };
   }
 
   return { allowRequest, check };
+}
+
+// ---------------------------------------------------------------------------
+// Step 6: sliding window LOG. Used for the per-document fraud limit:
+// at most `limit` ALLOWED requests per key in ANY window of `windowMs`
+// (e.g. 3 per 10 minutes), counting back from `now`. A request exactly
+// `windowMs` old has left the window.
+// Rejected requests are not recorded.
+// ---------------------------------------------------------------------------
+
+export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
+  // TODO: what do you need to remember per key?
+
+  function check(
+    key: string,
+    now: number,
+  ): {
+    allowed: boolean;
+    limit: number;
+    remaining: number;
+    retryAfterSeconds: number;
+  } {
+    // TODO
+    void key;
+    void now;
+    void limit;
+    void windowMs;
+    throw new Error("not implemented");
+  }
+
+  // Total number of timestamps stored across all keys (used by a test to
+  // check that old ones are thrown away).
+  function size(): number {
+    // TODO
+    throw new Error("not implemented");
+  }
+
+  return { check, size };
 }

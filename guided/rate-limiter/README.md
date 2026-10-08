@@ -20,13 +20,14 @@ New steps are added as you finish the previous one.
 
 | Step | You build | Concept |
 | --- | --- | --- |
-| 1 | `allowRequest(key)`: allow the first N requests per key, reject the rest | a server remembers things between requests; counting per key with a `Map` |
-| 2 | …only count requests inside a time window | fixed windows; passing in the time (`now`) so tests can control it |
-| 3 | prove the fixed window's weak spot | the 2× burst at a window boundary |
-| 4 | a token bucket | allowing bursts while limiting the average |
-| 5 | return `remaining` and `resetSeconds` | turning limiter state into the response headers |
-| 6 | `checkLimits({ apiKey, documentNumber })` | combining two limits, and which order to check them |
-| 7 | the HTTP route: 200 vs 429 + headers | servers, routes, middleware |
-| 8 | move counters into a shared store | why 20 servers can't each keep their own `Map`; Redis; atomic increments |
-| 9 | when the store is down | fail open vs fail closed; a backup local count |
-| 10 | multiple regions | home regions, failover, circuit breakers |
+| ✅ 1 | `allowRequest(key)`: allow the first N requests per key, reject the rest | a server remembers things between requests; counting per key with a `Map` |
+| ✅ 2 | …only count requests inside a time window | fixed windows; passing in the time (`now`) so tests can control it |
+| ✅ 3 | prove the fixed window's weak spot | the 2× burst at a window boundary |
+| ✅ 4 | a token bucket (per-customer limit) | allowing bursts while limiting the average; lazy refill |
+| ✅ 5 | `check()` returns `limit`, `remaining`, `retryAfterSeconds` | turning limiter state into the response headers |
+| 6 | a sliding window log (per-document fraud limit) | an EXACT limit over any rolling window |
+| 7 | `checkLimits({ apiKey, documentNumber })` | combining two limits, and which order to check them |
+| 8 | the HTTP route: 200 vs 429 + headers | servers, routes, middleware |
+| 9 | move counters into a shared store | why 20 servers can't each keep their own `Map`; Redis; atomic increments |
+| 10 | when the store is down | fail open vs fail closed; a backup local count |
+| 11 | multiple regions | home regions, failover, circuit breakers |
