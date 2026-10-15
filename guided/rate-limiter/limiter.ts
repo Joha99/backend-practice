@@ -559,15 +559,74 @@ export function createMultiRegionLimiter(options: {
   failMode: "open" | "closed";
   probeAfterMs?: number;
 }) {
+  // map between regions and time in which they failed
+  const failedRegions = new Map<string, number>();
+
+  const {
+    stores,
+    homeRegionOf,
+    failoverOf,
+    limit,
+    windowMs,
+    failMode,
+    probeAfterMs,
+  } = options;
+
+  async function tryRegion(
+    region: string,
+    storeKey: string,
+    ttlMs: number,
+  ): Promise<number | null> {
+    try {
+      const newCount = await stores[region].incr(storeKey, ttlMs);
+      return newCount;
+    } catch (err) {
+      if (!(err instanceof StoreUnavailableError)) throw err;
+      return null;
+    }
+  }
+
   async function check(
     key: string,
     now: number,
   ): Promise<{ allowed: boolean; servedBy: string | null; degraded: boolean }> {
-    // TODO
-    void options;
-    void key;
-    void now;
-    throw new Error("not implemented");
+    const homeRegion = homeRegionOf(key);
+    const failoverRegion = failoverOf[homeRegion];
+    const currentWindow = Math.floor(now / windowMs);
+    const ttlMs = (currentWindow + 1) * windowMs - now;
+    const storeKey = `${key}:${currentWindow}`;
+
+    const storesToTry = [
+      { region: homeRegion, degraded: false },
+      { region: failoverRegion, degraded: true },
+    ];
+
+    for (const { region, degraded } of storesToTry) {
+      const probeAfterTime = failedRegions.get(region);
+
+      if (probeAfterTime !== undefined && probeAfterMs !== undefined) {
+        if (probeAfterTime > now) {
+          continue;
+        }
+
+        failedRegions.delete(region);
+      }
+
+      const newCount = await tryRegion(region, storeKey, ttlMs);
+
+      if (newCount === null) {
+        failedRegions.set(region, now + (probeAfterMs ?? 0));
+        continue;
+      }
+
+      if (limit === 0 || newCount > limit) {
+        return { allowed: false, servedBy: region, degraded };
+      }
+
+      return { allowed: true, servedBy: region, degraded };
+    }
+
+    return { allowed: failMode === "open", servedBy: null, degraded: true };
   }
 
   return { check };
