@@ -17,6 +17,21 @@ Run a problem's server manually: `node problems/01-raw-http-server/server.ts`, t
 
 > Node's type stripping only supports _erasable_ TypeScript: no `enum`, no `namespace`, no constructor parameter properties (`constructor(public x: number)`). Declare fields explicitly instead. `tsconfig.json` sets `erasableSyntaxOnly` so the editor flags these.
 
+## New to backend? Start here
+
+- **`GLOSSARY.md`**: every term the design prompts use, in plain words, with a frontend analogy. Keep it open while you read a design prompt.
+- **Guided sets**: build one idea at a time, a small test per step, with the "why" explained in frontend terms. Do these before the matching un-guided problem.
+
+| Guided set | Path | Steps | Leads into |
+| --- | --- | --- | --- |
+| Rate limiter (identity-verification API) | `guided/rate-limiter/` | 1–6 ✅, 7, 9–12 (8 skipped) | `design/01`, `problems/04` |
+| Profile cache (verified-profile lookups) | `guided/profile-cache/` | 1–5 | `design/02`, `problems/10` |
+
+```bash
+node --test 'guided/rate-limiter/*.test.ts'
+node --test 'guided/profile-cache/*.test.ts'
+```
+
 ## Problems
 
 | Status | #   | Problem                                  | Path                              | Difficulty   | Key Skills                                                                                                                               |

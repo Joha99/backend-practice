@@ -1,6 +1,8 @@
 // Guided rate limiter. You grow this file one step at a time.
 // See README.md in this folder for the step list.
 
+import { StoreUnavailableError, type SharedStore } from "./sharedStore.ts";
+
 // ---------------------------------------------------------------------------
 // Step 1: allow the first `limit` requests for each key, reject the rest.
 // ---------------------------------------------------------------------------
@@ -256,4 +258,212 @@ export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
   }
 
   return { check, size };
+}
+
+// ---------------------------------------------------------------------------
+// Step 7: two limits on one request.
+//
+// A verification request is checked against BOTH:
+//   - the CUSTOMER limit (token bucket, Step 4): keyed by apiKey. Protects
+//     cost + fairness between businesses.
+//   - the DOCUMENT limit (sliding log, Step 6): keyed by documentNumber,
+//     ACROSS all API keys. Protects against fraud (someone testing stolen IDs
+//     through several different businesses).
+//
+// Rules:
+//   1. Check the customer limit FIRST. If it rejects, return right away and
+//      DON'T touch the document limit: a request we refused because the
+//      customer was too busy must not use up one of the document's 3 attempts.
+//   2. If the customer limit allows it but the document limit rejects, the
+//      customer's token stays spent. (They did send us a request.)
+//   3. Return which limit rejected it (or null), and that limit's
+//      retryAfterSeconds (0 when allowed).
+//
+// Reuse your Step 4 and Step 6 factories inside this one.
+// ---------------------------------------------------------------------------
+
+export function createVerificationLimits(options: {
+  customer: { capacity: number; refillPerSecond: number };
+  document: { limit: number; windowMs: number };
+}) {
+  function checkLimits(request: {
+    apiKey: string;
+    documentNumber: string;
+    now: number;
+  }): {
+    allowed: boolean;
+    rejectedBy: "customer" | "document" | null;
+    retryAfterSeconds: number;
+  } {
+    // TODO
+    void options;
+    void request;
+    throw new Error("not implemented");
+  }
+
+  return { checkLimits };
+}
+
+// ---------------------------------------------------------------------------
+// Step 8 is skipped: it's the HTTP route (200 vs 429 + headers), which you
+// already know from the frontend side.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Step 9: move the count into a SHARED store.
+//
+// Why: the API runs on many servers. If each keeps its own Map, a customer
+// spread over 20 servers gets 20x the limit (like every browser tab keeping
+// its own counter in useState). So the counts move into one store that every
+// server talks to: `SharedStore` in sharedStore.ts (a fake Redis). Every
+// call to it is async, like a fetch.
+//
+// We use a FIXED window here (Step 2's idea) because it's one number per key,
+// which keeps the store part simple. Store key: `${key}:${windowId}` where
+// windowId = Math.floor(now / windowMs). Give stored values a ttlMs of
+// windowMs so old windows clean themselves up.
+//
+// Part A: createNaiveSharedLimiter. Read the count with get(), check it,
+//   then write count + 1 with set(). It works for one request at a time.
+//   The step09 test then runs several requests AT THE SAME TIME from two
+//   "servers", and shows more than `limit` get through. Make that test pass
+//   by implementing the naive version honestly: get, then set.
+//   Why it breaks: between your `await store.get()` and `await store.set()`,
+//   other requests run their get() too and all see the same old count. Same
+//   bug as two async click handlers both reading stale state, then both
+//   calling setState.
+//
+// Part B: createAtomicSharedLimiter. Fix it with ONE store.incr() call:
+//   the store adds 1 and returns the new count in a single step that nothing
+//   can interrupt ("atomic"). Allowed if the new count <= limit.
+//   (This counts rejected requests too. That's the usual Redis pattern and
+//   it's fine for a fixed window.)
+// ---------------------------------------------------------------------------
+
+export function createNaiveSharedLimiter(store: SharedStore, limit: number, windowMs: number) {
+  async function allowRequest(key: string, now: number): Promise<boolean> {
+    // TODO
+    void store;
+    void limit;
+    void windowMs;
+    void key;
+    void now;
+    throw new Error("not implemented");
+  }
+
+  return { allowRequest };
+}
+
+export function createAtomicSharedLimiter(store: SharedStore, limit: number, windowMs: number) {
+  async function allowRequest(key: string, now: number): Promise<boolean> {
+    // TODO
+    void store;
+    void limit;
+    void windowMs;
+    void key;
+    void now;
+    throw new Error("not implemented");
+  }
+
+  return { allowRequest };
+}
+
+// ---------------------------------------------------------------------------
+// Step 10: when the store is DOWN.
+//
+// The store throws StoreUnavailableError (imported at the top of this file).
+// The limiter can't count, so it has to pick a behavior:
+//   - failMode "closed": reject every request. Safe, but your API is down
+//     for everyone while the store is down.
+//   - failMode "open": allow every request. Your API stays up, but nothing
+//     is limited.
+// Frontend analogy: your feature-flag service is down. Do you show the
+// feature to everyone (open) or hide it from everyone (closed)?
+//
+// Middle ground, `localFallbackLimit`: with failMode "open", instead of
+// allowing EVERYTHING, each server keeps its own in-memory fixed-window count
+// per key and allows up to localFallbackLimit per window. Not exact (each
+// server counts separately) but not blind either.
+//
+// Rules:
+//   1. Store up: behave like createAtomicSharedLimiter. degraded: false.
+//   2. Store throws StoreUnavailableError: use failMode / localFallbackLimit.
+//      degraded: true.
+//   3. Any OTHER error is a bug: let it throw out of check().
+//   4. The store coming back up needs no special code: the next check just
+//      works again.
+// ---------------------------------------------------------------------------
+
+export function createResilientLimiter(options: {
+  store: SharedStore;
+  limit: number;
+  windowMs: number;
+  failMode: "open" | "closed";
+  localFallbackLimit?: number;
+}) {
+  async function check(key: string, now: number): Promise<{ allowed: boolean; degraded: boolean }> {
+    // TODO
+    void options;
+    void key;
+    void now;
+    void StoreUnavailableError;
+    throw new Error("not implemented");
+  }
+
+  return { check };
+}
+
+// ---------------------------------------------------------------------------
+// Steps 11 + 12: MULTIPLE REGIONS.
+//
+// The API runs in several regions (us-east, eu-west, ...), each with its own
+// store. To keep ONE count per key, every key has a HOME region
+// (homeRegionOf(key)) and is always counted in that region's store, whichever
+// server handled the request. Frontend analogy: one source of truth, not a
+// copy per tab.
+//
+// Step 11: failover.
+//   1. Count with incr() in the home region's store. Return
+//      { allowed, servedBy: <that region>, degraded: false }.
+//   2. Home store throws StoreUnavailableError: count in
+//      failoverOf[homeRegion]'s store instead (its count starts from 0, which
+//      is the price of failover). degraded: true, servedBy: the failover region.
+//   3. Both unavailable: use failMode. servedBy: null, degraded: true.
+//   4. Any other error: throw it.
+//
+// Step 12: circuit breaker (`probeAfterMs` option; when it's undefined there's
+// no breaker, which is how Step 11's tests run).
+//   Without it, every request while a region is down first waits for the dead
+//   store to fail, then fails over: slow, and it hammers a store that's
+//   trying to recover. Frontend analogy: don't retry a failing fetch in a
+//   tight loop.
+//   1. When a store throws StoreUnavailableError, mark that region OPEN
+//      (= skip it) until now + probeAfterMs. While open, don't call it at all.
+//   2. Once that time has passed, the next request tries it once
+//      ("half-open"). Success: the region is healthy again. Failure: open for
+//      another probeAfterMs.
+//   3. The breaker applies to every region's store, failover ones included.
+// ---------------------------------------------------------------------------
+
+export function createMultiRegionLimiter(options: {
+  stores: Record<string, SharedStore>;
+  homeRegionOf: (key: string) => string;
+  failoverOf: Record<string, string>;
+  limit: number;
+  windowMs: number;
+  failMode: "open" | "closed";
+  probeAfterMs?: number;
+}) {
+  async function check(
+    key: string,
+    now: number,
+  ): Promise<{ allowed: boolean; servedBy: string | null; degraded: boolean }> {
+    // TODO
+    void options;
+    void key;
+    void now;
+    throw new Error("not implemented");
+  }
+
+  return { check };
 }
