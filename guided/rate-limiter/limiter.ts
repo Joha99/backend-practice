@@ -3,81 +3,9 @@
 
 import { StoreUnavailableError, type SharedStore } from "./sharedStore.ts";
 
-// ---------------------------------------------------------------------------
-// Step 1: allow the first `limit` requests for each key, reject the rest.
-// ---------------------------------------------------------------------------
-
-export function createCounterLimiter(limit: number) {
-  // Keeps a map tracking the count of requests associated with a unique identifier
-  const counts = new Map<string, number>();
-
-  // Checks to map to decide if a request has been made for a given identifier more times than the limit
-  function allowRequest(key: string): boolean {
-    let newCount = 0;
-
-    const keyCount = counts.get(key);
-    if (!keyCount) {
-      newCount = 1;
-    } else {
-      newCount = keyCount + 1;
-    }
-
-    if (newCount <= limit) {
-      counts.set(key, newCount);
-      return true;
-    }
-    return false;
-  }
-
-  return { allowRequest };
-}
-
-// ---------------------------------------------------------------------------
-// Step 2: fixed window. At most `limit` requests per key in each window of
-// `windowMs` milliseconds (e.g. 5 per 60,000 ms = 5 per minute).
-// The caller passes in the current time (`now`, in ms) instead of the
-// function calling Date.now(), so tests can control time.
-// ---------------------------------------------------------------------------
-
-export function createFixedWindowLimiter(limit: number, windowMs: number) {
-  let counts = new Map<string, number>();
-  let currentWindow = 0;
-
-  function allowRequest(key: string, now: number): boolean {
-    if (limit === 0) return false;
-
-    const newWindow = Math.floor(now / windowMs);
-
-    // Disgard the old window counts if we enter a new window
-    if (newWindow > currentWindow) {
-      counts = new Map<string, number>();
-      currentWindow = newWindow;
-    }
-
-    const previousCount = counts?.get(key) ?? 0;
-
-    if (previousCount < limit) {
-      counts.set(key, previousCount + 1);
-      return true;
-    }
-    return false;
-  }
-
-  // How many counts are stored right now (used by a test to check that old
-  // windows don't pile up forever).
-  function size(): number {
-    return counts.size;
-  }
-
-  return { allowRequest, size };
-}
-
-// ---------------------------------------------------------------------------
-// Step 4: token bucket. Each key has a bucket holding up to `capacity`
-// tokens. A request takes 1 token; with no token it's rejected. Tokens come
-// back at `refillPerSecond` (fractions are fine, e.g. 0.5 tokens).
-// A key that has never been seen starts with a FULL bucket.
-// ---------------------------------------------------------------------------
+type ApiKey = string;
+type DocumentNumber = string;
+type Timestamp = number;
 
 interface TokenBucketValue {
   /**
@@ -90,14 +18,85 @@ interface TokenBucketValue {
   tokens: number;
 }
 
+// ---------------------------------------------------------------------------
+// Step 1: allow the first `limit` requests for each key, reject the rest.
+// ---------------------------------------------------------------------------
+export function createCounterLimiter(limit: number) {
+  const tokenBucket = new Map<ApiKey, number>();
+
+  function allowRequest(key: string): boolean {
+    let newTokenCount = 0;
+    const tokensLeft = tokenBucket.get(key);
+
+    if (!tokensLeft) {
+      newTokenCount = 1;
+    } else {
+      newTokenCount = tokensLeft + 1;
+    }
+
+    if (newTokenCount <= limit) {
+      tokenBucket.set(key, newTokenCount);
+      return true;
+    }
+
+    return false;
+  }
+
+  return { allowRequest };
+}
+
+// ---------------------------------------------------------------------------
+// Step 2: fixed window. At most `limit` requests per key in each window of
+// `windowMs` milliseconds (e.g. 5 per 60,000 ms = 5 per minute).
+// The caller passes in the current time (`now`, in ms) instead of the
+// function calling Date.now(), so tests can control time.
+// ---------------------------------------------------------------------------
+export function createFixedWindowLimiter(limit: number, windowMs: number) {
+  let tokenBucket = new Map<ApiKey, number>();
+  let currentWindow = 0;
+
+  function allowRequest(key: string, now: number): boolean {
+    if (limit === 0) return false;
+
+    const newWindow = Math.floor(now / windowMs);
+
+    // Disgard the old tokenBucket when we enter a new window
+    if (newWindow > currentWindow) {
+      tokenBucket = new Map<ApiKey, number>();
+      currentWindow = newWindow;
+    }
+
+    const previousTokenCount = tokenBucket?.get(key) ?? 0;
+
+    if (previousTokenCount < limit) {
+      tokenBucket.set(key, previousTokenCount + 1);
+      return true;
+    }
+
+    return false;
+  }
+
+  // How many tokenBucket are stored right now (used by a test to check that old
+  // windows don't pile up forever).
+  function size(): number {
+    return tokenBucket.size;
+  }
+
+  return { allowRequest, size };
+}
+
+// ---------------------------------------------------------------------------
+// Step 4: token bucket. Each key has a bucket holding up to `capacity`
+// tokens. A request takes 1 token; with no token it's rejected. Tokens come
+// back at `refillPerSecond` (fractions are fine, e.g. 0.5 tokens).
+// A key that has never been seen starts with a FULL bucket.
+// ---------------------------------------------------------------------------
 export function createTokenBucketLimiter(
   capacity: number,
   refillPerSecond: number,
 ) {
-  // maps key to # of tokens in bucket
-  const tokenBucket = new Map<string, TokenBucketValue>();
+  const tokenBucket = new Map<ApiKey, TokenBucketValue>();
 
-  // request for key is only valid if the tokens associated with the key has more than 0 tokens
   function allowRequest(key: string, now: number): boolean {
     return check(key, now).allowed;
   }
@@ -111,7 +110,6 @@ export function createTokenBucketLimiter(
     remaining: number;
     retryAfterSeconds: number;
   } {
-    // no request is allowed if capacity is 0
     if (capacity === 0) {
       return {
         allowed: false,
@@ -121,57 +119,56 @@ export function createTokenBucketLimiter(
       };
     }
 
-    const currBucket = tokenBucket.get(key);
+    const customerBucket = tokenBucket.get(key);
 
-    // first request made for key, we are at full capacity
-    if (!currBucket) {
+    // First request made by customer
+    if (!customerBucket) {
       const newBucket: TokenBucketValue = {
         updatedAt: now,
         tokens: capacity - 1,
       };
+
       tokenBucket.set(key, newBucket);
 
       return {
         allowed: true,
         limit: capacity,
         remaining: capacity - 1,
-        retryAfterSeconds: 0, // this request succeeded so we don't need to retry again
+        retryAfterSeconds: 0,
       };
     }
 
-    // this is not the first request made for key
-    const secondsPassedSinceLastUpdate = (now - currBucket.updatedAt) / 1000;
-    const tokensStoredAfterLastUpdate = currBucket.tokens;
-    const refilledSinceLastUpdate =
-      secondsPassedSinceLastUpdate * refillPerSecond;
-    const currentTokenCount = Math.min(
+    const secSinceLastRequest = (now - customerBucket.updatedAt) / 1000;
+    const currTokenCount = customerBucket.tokens;
+    const refilledTokenCount = secSinceLastRequest * refillPerSecond;
+
+    const newTokenCount = Math.min(
       capacity,
-      tokensStoredAfterLastUpdate + refilledSinceLastUpdate,
+      currTokenCount + refilledTokenCount,
     );
 
-    // only make request if there is at least one full token available
-    if (currentTokenCount >= 1) {
+    if (newTokenCount >= 1) {
       const updatedBucket: TokenBucketValue = {
         updatedAt: now,
-        tokens: currentTokenCount - 1,
+        tokens: newTokenCount - 1,
       };
+
       tokenBucket.set(key, updatedBucket);
 
       return {
         allowed: true,
         limit: capacity,
-        remaining: Math.floor(currentTokenCount - 1),
-        retryAfterSeconds: 0, // this request succeeded so we don't need to retry again
+        remaining: Math.floor(newTokenCount - 1),
+        retryAfterSeconds: 0,
       };
     }
 
-    // there are no complete tokens available
-    const retryAfterSeconds = (1 - currentTokenCount) / refillPerSecond;
+    const retryAfterSeconds = (1 - newTokenCount) / refillPerSecond;
 
     return {
       allowed: false,
       limit: capacity,
-      remaining: Math.floor(currentTokenCount),
+      remaining: Math.floor(newTokenCount),
       retryAfterSeconds: Math.ceil(retryAfterSeconds),
     };
   }
@@ -186,13 +183,8 @@ export function createTokenBucketLimiter(
 // `windowMs` old has left the window.
 // Rejected requests are not recorded.
 // ---------------------------------------------------------------------------
-
 export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
-  // a sliding window has no buckets
-  // a window ends at "now" and begins at now - windowMs
-  // instead of count of requests, we need to store when each happened
-  // need to store a log of timesteamps per key (document)
-  const timestampsByDocument: Map<string, number[]> = new Map();
+  const timestampsByDocument: Map<DocumentNumber, Timestamp[]> = new Map();
 
   function check(
     key: string,
@@ -214,34 +206,31 @@ export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
       };
     }
 
-    // check how many requests have been made between now - windowMs to now
-    // if that number is === limit, the request is not allowed
     const lowerLimit = now - windowMs;
     const prunedTimestamps = timestampsByDocument
       .get(key)!
       .filter((stamp) => stamp > lowerLimit);
 
     if (prunedTimestamps.length >= limit) {
-      const oldestTimestamp = prunedTimestamps[0];
-      const timeLeftMs = oldestTimestamp + windowMs - now;
-      const timeLeftS = Math.ceil(timeLeftMs / 1000);
+      const oldestRequest = prunedTimestamps[0];
+      const timeLeftMs = oldestRequest + windowMs - now;
 
       return {
         allowed: false,
         limit: limit,
         remaining: 0,
-        retryAfterSeconds: timeLeftS,
+        retryAfterSeconds: Math.ceil(timeLeftMs / 1000),
       };
     }
 
-    const newTimestamps = [...prunedTimestamps, now];
-    timestampsByDocument.set(key, newTimestamps);
+    const updatedTimestamps = [...prunedTimestamps, now];
+    timestampsByDocument.set(key, updatedTimestamps);
 
     return {
       allowed: true,
       limit: limit,
-      remaining: limit - newTimestamps.length,
-      retryAfterSeconds: 0, // 0 because this request is allowed
+      remaining: limit - updatedTimestamps.length,
+      retryAfterSeconds: 0,
     };
   }
 
@@ -281,11 +270,20 @@ export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
 //
 // Reuse your Step 4 and Step 6 factories inside this one.
 // ---------------------------------------------------------------------------
-
 export function createVerificationLimits(options: {
   customer: { capacity: number; refillPerSecond: number };
   document: { limit: number; windowMs: number };
 }) {
+  const { check: checkApiKey, allowRequest } = createTokenBucketLimiter(
+    options.customer.capacity,
+    options.customer.refillPerSecond,
+  );
+
+  const { check: checkDocumentId, size } = createSlidingWindowLogLimiter(
+    options.document.limit,
+    options.document.windowMs,
+  );
+
   function checkLimits(request: {
     apiKey: string;
     documentNumber: string;
@@ -295,10 +293,34 @@ export function createVerificationLimits(options: {
     rejectedBy: "customer" | "document" | null;
     retryAfterSeconds: number;
   } {
-    // TODO
-    void options;
-    void request;
-    throw new Error("not implemented");
+    const customerCheckResult = checkApiKey(request.apiKey, request.now);
+
+    if (!customerCheckResult.allowed) {
+      return {
+        allowed: false,
+        rejectedBy: "customer",
+        retryAfterSeconds: customerCheckResult.retryAfterSeconds,
+      };
+    }
+
+    const documentCheckResult = checkDocumentId(
+      request.documentNumber,
+      request.now,
+    );
+
+    if (!documentCheckResult.allowed) {
+      return {
+        allowed: false,
+        rejectedBy: "document",
+        retryAfterSeconds: documentCheckResult.retryAfterSeconds,
+      };
+    }
+
+    return {
+      allowed: true,
+      rejectedBy: null,
+      retryAfterSeconds: 0,
+    };
   }
 
   return { checkLimits };
@@ -340,7 +362,11 @@ export function createVerificationLimits(options: {
 //   it's fine for a fixed window.)
 // ---------------------------------------------------------------------------
 
-export function createNaiveSharedLimiter(store: SharedStore, limit: number, windowMs: number) {
+export function createNaiveSharedLimiter(
+  store: SharedStore,
+  limit: number,
+  windowMs: number,
+) {
   async function allowRequest(key: string, now: number): Promise<boolean> {
     // TODO
     void store;
@@ -354,7 +380,11 @@ export function createNaiveSharedLimiter(store: SharedStore, limit: number, wind
   return { allowRequest };
 }
 
-export function createAtomicSharedLimiter(store: SharedStore, limit: number, windowMs: number) {
+export function createAtomicSharedLimiter(
+  store: SharedStore,
+  limit: number,
+  windowMs: number,
+) {
   async function allowRequest(key: string, now: number): Promise<boolean> {
     // TODO
     void store;
@@ -401,7 +431,10 @@ export function createResilientLimiter(options: {
   failMode: "open" | "closed";
   localFallbackLimit?: number;
 }) {
-  async function check(key: string, now: number): Promise<{ allowed: boolean; degraded: boolean }> {
+  async function check(
+    key: string,
+    now: number,
+  ): Promise<{ allowed: boolean; degraded: boolean }> {
     // TODO
     void options;
     void key;
