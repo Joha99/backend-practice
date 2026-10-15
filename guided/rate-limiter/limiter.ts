@@ -361,20 +361,33 @@ export function createVerificationLimits(options: {
 //   (This counts rejected requests too. That's the usual Redis pattern and
 //   it's fine for a fixed window.)
 // ---------------------------------------------------------------------------
-
 export function createNaiveSharedLimiter(
   store: SharedStore,
   limit: number,
   windowMs: number,
 ) {
   async function allowRequest(key: string, now: number): Promise<boolean> {
-    // TODO
-    void store;
-    void limit;
-    void windowMs;
-    void key;
-    void now;
-    throw new Error("not implemented");
+    if (limit === 0) {
+      return false;
+    }
+
+    const newWindow = Math.floor(now / windowMs);
+    const storeKey = `${key}:${newWindow}`;
+    const requestCount = await store.get(storeKey);
+    const ttlMs = (newWindow + 1) * windowMs - now;
+
+    // either first request or new window
+    if (requestCount === null) {
+      await store.set(storeKey, 1, ttlMs);
+      return true;
+    }
+
+    if (requestCount < limit) {
+      await store.set(storeKey, requestCount + 1, ttlMs);
+      return true;
+    }
+
+    return false;
   }
 
   return { allowRequest };
@@ -386,13 +399,17 @@ export function createAtomicSharedLimiter(
   windowMs: number,
 ) {
   async function allowRequest(key: string, now: number): Promise<boolean> {
-    // TODO
-    void store;
-    void limit;
-    void windowMs;
-    void key;
-    void now;
-    throw new Error("not implemented");
+    if (limit === 0) {
+      return false;
+    }
+
+    const newWindow = Math.floor(now / windowMs);
+    const storeKey = `${key}:${newWindow}`;
+    const ttlMs = (newWindow + 1) * windowMs - now;
+
+    // count if the current request is processed
+    const newCount = await store.incr(storeKey, ttlMs);
+    return newCount <= limit;
   }
 
   return { allowRequest };
