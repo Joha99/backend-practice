@@ -448,16 +448,71 @@ export function createResilientLimiter(options: {
   failMode: "open" | "closed";
   localFallbackLimit?: number;
 }) {
+  const localCounts = new Map<ApiKey, { window: number; count: number }>();
+
   async function check(
     key: string,
     now: number,
   ): Promise<{ allowed: boolean; degraded: boolean }> {
-    // TODO
-    void options;
-    void key;
-    void now;
-    void StoreUnavailableError;
-    throw new Error("not implemented");
+    const newWindow = Math.floor(now / options.windowMs);
+    const ttlMs = (newWindow + 1) * options.windowMs - now;
+    const storeKey = `${key}:${newWindow}`;
+
+    try {
+      const newCount = await options.store.incr(storeKey, ttlMs);
+      const allowed = options.limit !== 0 && newCount <= options.limit;
+
+      return {
+        allowed,
+        degraded: false,
+      };
+    } catch (err) {
+      if (!(err instanceof StoreUnavailableError)) {
+        throw err;
+      }
+
+      if (options.limit === 0 || options.failMode === "closed") {
+        return {
+          allowed: false,
+          degraded: true,
+        };
+      }
+
+      if (options.localFallbackLimit === undefined) {
+        return {
+          allowed: true,
+          degraded: true,
+        };
+      }
+
+      if (options.localFallbackLimit === 0) {
+        return {
+          allowed: false,
+          degraded: true,
+        };
+      }
+
+      const currBucket = localCounts.get(key);
+
+      if (currBucket === undefined || currBucket.window !== newWindow) {
+        localCounts.set(key, { window: newWindow, count: 1 });
+        return { allowed: true, degraded: true };
+      }
+
+      if (currBucket.count < options.localFallbackLimit) {
+        localCounts.set(key, {
+          window: newWindow,
+          count: currBucket.count + 1,
+        });
+
+        return { allowed: true, degraded: true };
+      }
+
+      return {
+        allowed: false,
+        degraded: true,
+      };
+    }
   }
 
   return { check };
