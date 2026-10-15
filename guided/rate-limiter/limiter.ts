@@ -186,7 +186,11 @@ export function createTokenBucketLimiter(
 // ---------------------------------------------------------------------------
 
 export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
-  // TODO: what do you need to remember per key?
+  // a sliding window has no buckets
+  // a window ends at "now" and begins at now - windowMs
+  // instead of count of requests, we need to store when each happened
+  // need to store a log of timesteamps per key (document)
+  const timestampsByDocument: Map<string, number[]> = new Map();
 
   function check(
     key: string,
@@ -197,19 +201,58 @@ export function createSlidingWindowLogLimiter(limit: number, windowMs: number) {
     remaining: number;
     retryAfterSeconds: number;
   } {
-    // TODO
-    void key;
-    void now;
-    void limit;
-    void windowMs;
-    throw new Error("not implemented");
+    if (!timestampsByDocument.has(key)) {
+      timestampsByDocument.set(key, [now]);
+
+      return {
+        allowed: true,
+        limit: limit,
+        remaining: limit - 1,
+        retryAfterSeconds: 0,
+      };
+    }
+
+    // check how many requests have been made between now - windowMs to now
+    // if that number is === limit, the request is not allowed
+    const lowerLimit = now - windowMs;
+    const prunedTimestamps = timestampsByDocument
+      .get(key)!
+      .filter((stamp) => stamp > lowerLimit);
+
+    if (prunedTimestamps.length >= limit) {
+      const oldestTimestamp = prunedTimestamps[0];
+      const timeLeftMs = oldestTimestamp + windowMs - now;
+      const timeLeftS = Math.ceil(timeLeftMs / 1000);
+
+      return {
+        allowed: false,
+        limit: limit,
+        remaining: 0,
+        retryAfterSeconds: timeLeftS,
+      };
+    }
+
+    const newTimestamps = [...prunedTimestamps, now];
+    timestampsByDocument.set(key, newTimestamps);
+
+    return {
+      allowed: true,
+      limit: limit,
+      remaining: limit - newTimestamps.length,
+      retryAfterSeconds: 0, // 0 because this request is allowed
+    };
   }
 
   // Total number of timestamps stored across all keys (used by a test to
   // check that old ones are thrown away).
   function size(): number {
-    // TODO
-    throw new Error("not implemented");
+    let count = 0;
+
+    for (const item of timestampsByDocument) {
+      count += item[1].length;
+    }
+
+    return count;
   }
 
   return { check, size };
