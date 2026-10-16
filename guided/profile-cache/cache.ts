@@ -28,43 +28,60 @@ export function createProfileCache(options: {
 }) {
   const { loadProfile, ttlMs, negativeTtlMs, maxEntries } = options;
 
-  // keep a local cache
   const cache = new Map<
     Profile["id"],
     { expiresAt: number; profile: Profile | null }
   >();
 
+  const inFlight = new Map<Profile["id"], Promise<Profile | null>>();
+
   async function get(id: string, now: number): Promise<Profile | null> {
     const cached = cache.get(id);
 
-    // pull existing profile from cache if the cached data is fresh
+    // pull existing profile from cache if the data is fresh
     if (cached && now < cached.expiresAt) {
-      // CACHE HIT
+      // move the data to the end of the map so that it's not accidentally removed when cache size hits limit
       const cachedProfile = cached;
       cache.delete(id);
       cache.set(id, cachedProfile);
       return cachedProfile.profile;
     }
 
-    // at this point, expired cached profile may exist so delete the outdated profile from cache
+    // expired cached profile may still exist so delete it
     cache.delete(id);
 
-    // retrieve profile from database if profile is not in cache or cache data is not fresh
-    const profile = await loadProfile(id);
+    // if a database read for this id is already running, wait for that instead of reading from the database
+    const inFlightRequest = inFlight.get(id);
 
-    // if the profile doesn't exist, we use negativeTtlMs to calculate expired timestamp
-    const ttl = profile ? ttlMs : negativeTtlMs;
-
-    // profile exists or we want to save non existing profiles (negativeTtlMs exists)
-    if (ttl) {
-      // remove the LRU if we hit limit in cache
-      if (maxEntries && cache.size >= maxEntries) {
-        cache.delete(cache.keys().next().value!);
-      }
-      cache.set(id, { expiresAt: now + ttl, profile: profile });
+    if (inFlightRequest) {
+      return await inFlightRequest;
     }
 
-    return profile;
+    // retrieve profile from database
+    const request = loadProfile(id)
+      .then((profile) => {
+        // if the profile doesn't exist and we want to save non-existent profiles to the cache,
+        // we use negativeTtlMs to calculate expired timestamp
+        const ttl = profile ? ttlMs : negativeTtlMs;
+
+        // profile exists in database or we want to save non-existent profiles
+        if (ttl) {
+          // remove the LRU if we hit limit in cache
+          if (maxEntries && cache.size >= maxEntries) {
+            cache.delete(cache.keys().next().value!);
+          }
+
+          cache.set(id, { expiresAt: now + ttl, profile: profile });
+        }
+
+        return profile;
+      })
+      .finally(() => {
+        inFlight.delete(id);
+      });
+
+    inFlight.set(id, request);
+    return await request;
   }
 
   function size(): number {
