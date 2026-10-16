@@ -37,32 +37,38 @@ export function createProfileCache(options: {
   async function get(id: string, now: number): Promise<Profile | null> {
     const cached = cache.get(id);
 
-    // cached data is fresh
+    // pull existing profile from cache if the cached data is fresh
     if (cached && now < cached.expiresAt) {
-      return cached.profile;
+      // CACHE HIT
+      const cachedProfile = cached;
+      cache.delete(id);
+      cache.set(id, cachedProfile);
+      return cachedProfile.profile;
     }
+
+    // at this point, expired cached profile may exist so delete the outdated profile from cache
+    cache.delete(id);
 
     // retrieve profile from database if profile is not in cache or cache data is not fresh
     const profile = await loadProfile(id);
 
-    if (profile) {
-      cache.set(id, { expiresAt: now + ttlMs, profile });
-      return profile;
+    // if the profile doesn't exist, we use negativeTtlMs to calculate expired timestamp
+    const ttl = profile ? ttlMs : negativeTtlMs;
+
+    // profile exists or we want to save non existing profiles (negativeTtlMs exists)
+    if (ttl) {
+      // remove the LRU if we hit limit in cache
+      if (maxEntries && cache.size >= maxEntries) {
+        cache.delete(cache.keys().next().value!);
+      }
+      cache.set(id, { expiresAt: now + ttl, profile: profile });
     }
 
-    // if profile is not in the database, save the non existent profile to the cache
-    // so that we don't hit the server on another request for this missing data
-    if (negativeTtlMs !== undefined) {
-      cache.set(id, { expiresAt: now + negativeTtlMs, profile: null });
-    }
-
-    // no match in cache or database
-    return null;
+    return profile;
   }
 
   function size(): number {
-    // TODO (Step 3)
-    throw new Error("not implemented");
+    return cache.size;
   }
 
   function invalidate(id: string): void {
