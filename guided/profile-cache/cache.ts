@@ -29,14 +29,16 @@ export function createProfileCache(options: {
   const { loadProfile, ttlMs, negativeTtlMs, maxEntries } = options;
 
   // keep a local cache
-  const cache = new Map<Profile["id"], { savedAt: number; profile: Profile }>();
+  const cache = new Map<
+    Profile["id"],
+    { expiresAt: number; profile: Profile | null }
+  >();
 
   async function get(id: string, now: number): Promise<Profile | null> {
-    // check if the profile has been cached
     const cached = cache.get(id);
 
     // cached data is fresh
-    if (cached && cached.savedAt + ttlMs > now) {
+    if (cached && now < cached.expiresAt) {
       return cached.profile;
     }
 
@@ -44,12 +46,17 @@ export function createProfileCache(options: {
     const profile = await loadProfile(id);
 
     if (profile) {
-      // save in the cache
-      cache.set(id, { savedAt: now, profile });
+      cache.set(id, { expiresAt: now + ttlMs, profile });
       return profile;
     }
 
-    // no cache hit or in database
+    // if profile is not in the database, save the non existent profile to the cache
+    // so that we don't hit the server on another request for this missing data
+    if (negativeTtlMs !== undefined) {
+      cache.set(id, { expiresAt: now + negativeTtlMs, profile: null });
+    }
+
+    // no match in cache or database
     return null;
   }
 
